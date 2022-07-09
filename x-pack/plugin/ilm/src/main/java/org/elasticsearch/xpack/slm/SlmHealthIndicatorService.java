@@ -17,6 +17,7 @@ import org.elasticsearch.health.SimpleHealthIndicatorDetails;
 import org.elasticsearch.health.UserAction;
 import org.elasticsearch.xpack.core.ilm.OperationMode;
 import org.elasticsearch.xpack.core.slm.SnapshotLifecycleMetadata;
+import org.elasticsearch.xpack.core.slm.SnapshotLifecyclePolicyMetadata;
 
 import java.util.Collections;
 import java.util.List;
@@ -24,6 +25,7 @@ import java.util.Map;
 
 import static org.elasticsearch.health.HealthStatus.GREEN;
 import static org.elasticsearch.health.HealthStatus.YELLOW;
+import static org.elasticsearch.health.HealthStatus.RED;
 import static org.elasticsearch.health.ServerHealthComponents.SNAPSHOT;
 
 /**
@@ -85,15 +87,59 @@ public class SlmHealthIndicatorService implements HealthIndicatorService {
                 )
             );
             return createIndicator(YELLOW, "SLM is not running", createDetails(explain, slmMetadata), impacts, List.of(SLM_NOT_RUNNING));
-        } else {
-            return createIndicator(
-                GREEN,
-                "SLM is running",
-                createDetails(explain, slmMetadata),
-                Collections.emptyList(),
-                Collections.emptyList()
-            );
+        } else if(slmMetadata.getSnapshotConfigurations().isEmpty() == false) {
+
+            //This is not the ideal implementation since it would create an indicator based on the first occurrence and the first only.
+            //That said it seems like it would be good to have an integration between the Health Service and the SnapshotLifecycle stuff.
+            //But I deem myself too much ignorant about the whole project to affirm it with certainty.
+            for (Map.Entry<String, SnapshotLifecyclePolicyMetadata> entry : slmMetadata.getSnapshotConfigurations().entrySet())
+            {
+                SnapshotLifecyclePolicyMetadata policy = entry.getValue();
+                if (policy != null)
+                {
+                    //This could be configurable by the SnapshotLifecyclePolicy.java constructor,
+                    //But I didn't have time to do such a big change, since it would affect a lot of schedule tasks
+                    //on already existent snapshots.
+                    long redNoRecentSuccessThreshold = 7889400000L; // 3 months in milliseconds;
+                    long yellowNoRecentSuccessThreshold = 2400000L;// 40 minutes in milliseconds
+                    long lastSuccess = policy.getLastSuccess().getSnapshotStartTimestamp();
+                    long lastFailure = policy.getLastFailure().getSnapshotFinishTimestamp();
+                    long timeDifference = lastFailure - lastSuccess;
+                    if (timeDifference > redNoRecentSuccessThreshold) {
+
+                        return createIndicator(
+                            RED,
+                            "The following configured snapshot policy's lastSucess time, exceeds the threshold of "
+                                + redNoRecentSuccessThreshold + " milliseconds: " + policy.getName(),
+                            createDetails(explain, slmMetadata),
+                            Collections.emptyList(),
+                            Collections.emptyList()
+
+                        );
+                    }
+                    else if(timeDifference > yellowNoRecentSuccessThreshold)
+                    {
+                        return createIndicator(
+                            YELLOW,
+                            "The following configured snapshot policy's lastSucess time, exceeds the threshold of "
+                                + yellowNoRecentSuccessThreshold + " milliseconds: " + policy.getName(),
+                            createDetails(explain, slmMetadata),
+                            Collections.emptyList(),
+                            Collections.emptyList()
+
+                        );
+                    }
+                }
+            }
+
         }
+        return createIndicator(
+            GREEN,
+            "SLM is running",
+            createDetails(explain, slmMetadata),
+            Collections.emptyList(),
+            Collections.emptyList()
+        );
     }
 
     private static HealthIndicatorDetails createDetails(boolean explain, SnapshotLifecycleMetadata metadata) {
